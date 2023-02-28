@@ -1,6 +1,8 @@
 import * as cdk from '@aws-cdk/core';
-import {CfnJob, CfnWorkflow, CfnTrigger} from '@aws-cdk/aws-glue';
+import * as glue from '@aws-cdk/aws-glue';
 import * as s3 from '@aws-cdk/aws-s3';
+import * as lambda from '@aws-cdk/aws-lambda';
+import * as iam from '@aws-cdk/aws-iam';
 import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { Construct } from 'constructs';
 
@@ -26,7 +28,7 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		env_role: 'arn:aws:iam::464340339497:role/service-role/AWSGlueServiceRole-Datalake'
 	  }
 
-	  const workflow_config = {
+	const workflow_config = {
 		// project_name: 'cdk-mercury-daily-files',
 		temp_bucket_name: `${project_name}-temp`,
 		destination_bucket_name: `${project_name}-csv`,
@@ -36,7 +38,81 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		etl_workflow_desc: 'Generate Daily Files for Mercury Team - Workflow Automation AWS CDK'
 	  }
 
+	const temp_bucket = new s3.Bucket(this, `${workflow_config.temp_bucket_name}`,
+	  {
+		bucketName: `${workflow_config.temp_bucket_name}`,
+		/* The following properties ensure the bucket is properly 
+		 * deleted when we run cdk destroy */
+		removalPolicy: cdk.RemovalPolicy.DESTROY
+	  });
 
+	  const destination_bucket = new s3.Bucket(this, `${workflow_config.destination_bucket_name}`,
+    {
+      bucketName: `${workflow_config.destination_bucket_name}`
+    });
+
+	const glue_job_run_sql_stored_procedure = new glue.CfnJob(this, `${workflow_config.glue_job_run_sql_sp}`, {
+		name: `${workflow_config.glue_job_run_sql_sp}`,
+		description: 'glue job to run SQL stored procedure',
+		command: {
+		  name: 'pythonshell',
+		  pythonVersion: '3',
+		  scriptLocation: 's3://mercury-oncall/scripts/mercury-daily-updates-sql-stored-procedure.py'
+		},
+		
+		role: `${env_config.env_role}`,
+		defaultArguments: {
+		  '--TempDir': `s3://aws-glue-temporary-${env_config.account_id}-${env_config.account_region}/`,
+		  '--additional-python-modules': 'aws-psycopg2',
+		  '--dbname': `${env_config.redshift_db_name}`,
+		  '--host': `${env_config.redshift_cluster_host_name}`,
+		  '--password': env_config.redshift_db_pwd, 
+		  '--port': env_config.redshift_db_port, 
+		  '--user': env_config.redshift_db_user,
+		  '--s3_load_sql_bucket': workflow_config.temp_bucket_name, 
+		  '--s3_load_sql_key': 'sql/sp_mercury_jan_2023.sql',
+		  '--enable-metrics': 'true',
+		  '--enable-continuous-cloudwatch-log': 'true',
+		  '--job-language': 'python',
+		  '--enable-glue-datacatalog': 'false'
+		},
+		connections: {
+		  connections: [`${env_config.vpc_connection}`],
+		},
+		glueVersion: "3.0",
+		maxRetries: 0,
+		maxCapacity: 1,
+		timeout: 300
+	  });
+  
+	const lambda_rename_move_files = new lambda.Function(this, `${workflow_config.lambda_name_rename_move_files}`, {
+		runtime: lambda.Runtime.PYTHON_3_7, //execution enviroment
+		code: lambda.Code.fromAsset("lib/assets"),  //directory used from where code is loaded
+		handler: 'lambda_rename_move_files.lambda_handler', //name of file.function is lambda_handler in the code for lambda
+		timeout: cdk.Duration.minutes(10),
+		  });
+  
+  
+	  // create a policy statement
+	  // for giving permissions to the lambda to run the glue job
+	const lambda_permissions_to_s3 = new iam.PolicyStatement({
+		actions: ['s3:*'],
+		resources: ['*'],
+	  });
+  
+	// add the policy to the Function's role
+	 // This provides access to the lambda function to S3 bucket
+	 lambda_rename_move_files.role?.attachInlinePolicy(
+	  new iam.Policy(this, `${project_name}-s3-permissions-to-lambda`, {
+		statements: [lambda_permissions_to_s3],
+	  }),
+	);
+  
+	// const s3PutEventSource = new lambdaEventSources.S3EventSource( bucket: temp_bucket , {
+	//   events: [
+	// 	s3.EventType.OBJECT_CREATED_PUT
+	//   ]
+	// });
 
 
   }
