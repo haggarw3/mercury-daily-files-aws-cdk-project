@@ -1,4 +1,4 @@
-CREATE OR REPLACE PROCEDURE mercury_output_file_jan2023()
+CREATE OR REPLACE PROCEDURE cdk_mercury_output_file_jan2023()
 LANGUAGE plpgsql AS $$
 DECLARE
 	date_var timestamp(0);
@@ -7,11 +7,11 @@ DECLARE
 BEGIN
 	SELECT into date_var CURRENT_timestamp;
 
-    drop table if exists mercury_oncall_temp_table;
-    drop table if exists mercury_oncall_temp_table_2;
-    drop table if exists mercury_oncall_temp_table_3;
+    drop table if exists cdk_mercury_oncall_temp_table;
+    drop table if exists cdk_mercury_oncall_temp_table_2;
+    drop table if exists cdk_mercury_oncall_temp_table_3;
     
-    create temporary table mercury_oncall_temp_table as
+    create temporary table cdk_mercury_oncall_temp_table as
    
        SELECT
         
@@ -496,31 +496,31 @@ BEGIN
 
 
 -- Removing duplicates using distinct * (where the entire row is duplicated)
-		create temporary table mercury_oncall_temp_table_2 as
-		select distinct * from mercury_oncall_temp_table;
+		create temporary table cdk_mercury_oncall_temp_table_2 as
+		select distinct * from cdk_mercury_oncall_temp_table;
         
         
 -- using a window function to remove the duplicate values based on root.identifier (incident_id) and response time 
 -- for the call to get the latest/updated response 
 
 		
-       	create temporary table mercury_oncall_temp_table_3 as
+       	create temporary table cdk_mercury_oncall_temp_table_3 as
 		select  row_number() over(partition by incident_id, servicing_dealer_st_cust_nbr order by dispatch_ccyymm_nbr) as row_number_, *
-		from mercury_oncall_temp_table_2
+		from cdk_mercury_oncall_temp_table_2
 		order by incident_id, responsetime desc, servicing_dealer_st_cust_nbr desc, dispatch_ccyymm_nbr ;
 			
         
-        delete from mercury_oncall_temp_table_3
+        delete from cdk_mercury_oncall_temp_table_3
         where row_number_ != 1;
         
-        ALTER TABLE mercury_oncall_temp_table_3
+        ALTER TABLE cdk_mercury_oncall_temp_table_3
   		DROP COLUMN row_number_;
 
-		update mercury_oncall_temp_table_3
+		update cdk_mercury_oncall_temp_table_3
 		set refusal_accepted_reason = 'Technician refused service'
 		where refusal_accepted_reason = 'Too busy';
 
-		update mercury_oncall_temp_table_3
+		update cdk_mercury_oncall_temp_table_3
 		set refusal_accepted_reason = 'Preferred Tire Not Available'
 		where lower(refusal_accepted_reason) = 'tire preference not available'
 		or lower(refusal_accepted_reason) = 'tire size not available (outside stock profile)'
@@ -533,40 +533,42 @@ BEGIN
 		or lower(refusal_accepted_reason) = 'tire size not available';
 
 
-		delete from mercury_oncall_temp_table_3
+		delete from cdk_mercury_oncall_temp_table_3
         where call_status is null;
         
         
-        -- ALTER TABLE mercury_oncall_temp_table_2
+        -- ALTER TABLE cdk_mercury_oncall_temp_table_2
   		-- DROP COLUMN responsetime;    
         
 
         -- updating to maintain the coherence between the two in case some condition is missed in the CASE STATEMENT
 
---      update mercury_oncall_temp_table_2
+--      update cdk_mercury_oncall_temp_table_2
 -- 		set accepted_flag = 'T'
 -- 		where call_status = 'ACCEPTED';
 
---         update mercury_oncall_temp_table_2
+--         update cdk_mercury_oncall_temp_table_2
 -- 		set accepted_flag = 'F'
 -- 		where call_status = 'DECLINED' or call_status = 'NOT_SERVICED';
 
 
-		create table if not exists "mercury_request".daily
-        (like mercury_oncall_temp_table_3);
+        create schema if not exists dev.cdk_mercury_request;
+
+		create table if not exists "cdk_mercury_request".daily
+        (like cdk_mercury_oncall_temp_table_3);
         
-        Insert into mercury_request.daily
-        select * from mercury_oncall_temp_table_3;
+        Insert into cdk_mercury_request.daily
+        select * from cdk_mercury_oncall_temp_table_3;
                 
-        ALTER TABLE mercury_oncall_temp_table_3
+        ALTER TABLE cdk_mercury_oncall_temp_table_3
   		DROP COLUMN LASTUPDATED;
         
     
 EXECUTE 'unload ('
-        || '''  select * from  mercury_oncall_temp_table_3  '''
+        || '''  select * from  cdk_mercury_oncall_temp_table_3  '''
         || ') '
 		|| 'to '
-        || '''s3://mercury-oncall/daily/'
+        || '''s3://cdk-mercury-daily-files-temp/daily/'
         || date_var
         || ' '''
         || ' iam_role '
@@ -579,10 +581,10 @@ EXECUTE 'unload ('
 
 --         || ' MAXFILESIZE 128 MB' this is deleted for daily uploads 
 
-		drop table mercury_oncall_temp_table;
-        drop table mercury_oncall_temp_table_2;
-        drop table mercury_oncall_temp_table_3;
+		drop table cdk_mercury_oncall_temp_table;
+        drop table cdk_mercury_oncall_temp_table_2;
+        drop table cdk_mercury_oncall_temp_table_3;
         
 END;
 $$;
-Call mercury_output_file_jan2023();
+Call cdk_mercury_output_file_jan2023();

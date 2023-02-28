@@ -2,6 +2,7 @@ import * as cdk from '@aws-cdk/core';
 import * as glue from '@aws-cdk/aws-glue';
 import * as s3 from '@aws-cdk/aws-s3';
 import * as lambda from '@aws-cdk/aws-lambda';
+import * as lambdaEventSources from '@aws-cdk/aws-lambda-event-sources';
 import * as iam from '@aws-cdk/aws-iam';
 import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { Construct } from 'constructs';
@@ -57,7 +58,7 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		command: {
 		  name: 'pythonshell',
 		  pythonVersion: '3',
-		  scriptLocation: 's3://mercury-oncall/scripts/mercury-daily-updates-sql-stored-procedure.py'
+		  scriptLocation: 's3://cdk-mercury-daily-files-temp/scripts/cdk_lambda_rename_move_files.py'
 		},
 		
 		role: `${env_config.env_role}`,
@@ -108,11 +109,17 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 	  }),
 	);
   
-	// const s3PutEventSource = new lambdaEventSources.S3EventSource( bucket: temp_bucket , {
-	//   events: [
-	// 	s3.EventType.OBJECT_CREATED_PUT
-	//   ]
-	// });
+	// Adding a trigger to the lambda function. The function is triggered as soon as a file is added to the bucket
+	const s3PutEventSource = new lambdaEventSources.S3EventSource( temp_bucket , {
+	  events: [
+		s3.EventType.OBJECT_CREATED_PUT
+	  ]
+	});
+
+	lambda_rename_move_files.addEventSource(s3PutEventSource);
+
+
+
 
 
   }
