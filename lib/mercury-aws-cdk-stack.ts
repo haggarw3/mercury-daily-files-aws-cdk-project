@@ -1,9 +1,11 @@
 import * as cdk from '@aws-cdk/core';
 import * as glue from '@aws-cdk/aws-glue';
 import * as s3 from '@aws-cdk/aws-s3';
+import { Asset } from "@aws-cdk/aws-s3-assets";
 import * as lambda from '@aws-cdk/aws-lambda';
 import * as lambdaEventSources from '@aws-cdk/aws-lambda-event-sources';
 import * as iam from '@aws-cdk/aws-iam';
+import * as path from "path";
 import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { Construct } from 'constructs';
 
@@ -35,25 +37,34 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		destination_bucket_name: `${project_name}-csv`,
 		glue_job_run_sql_sp: `${project_name}-output`,
 		lambda_name_rename_move_files: `${project_name}-rename-move`, 
-		etl_workflow_name: `${project_name}-etl-workflow`,
-		etl_workflow_desc: 'Generate Daily Files for Mercury Team - Workflow Automation AWS CDK'
+		glue_workflow_name: `${project_name}-etl-workflow`,
+		glue_workflow_desc: 'Generate Daily Files for Mercury Team - Workflow Automation AWS CDK'
 	  }
 
-	const temp_bucket = new s3.Bucket(this, `${workflow_config.temp_bucket_name}`,
+	const temp_bucket = new s3.Bucket(this, workflow_config.temp_bucket_name,
 	  {
-		bucketName: `${workflow_config.temp_bucket_name}`,
+		bucketName: workflow_config.temp_bucket_name,
 		/* The following properties ensure the bucket is properly 
 		 * deleted when we run cdk destroy */
 		removalPolicy: cdk.RemovalPolicy.DESTROY
 	  });
 
-	  const destination_bucket = new s3.Bucket(this, `${workflow_config.destination_bucket_name}`,
+	  const destination_bucket = new s3.Bucket(this, workflow_config.destination_bucket_name,
     {
-      bucketName: `${workflow_config.destination_bucket_name}`
+      bucketName: workflow_config.destination_bucket_name
     });
 
-	const glue_job_run_sql_stored_procedure = new glue.CfnJob(this, `${workflow_config.glue_job_run_sql_sp}`, {
-		name: `${workflow_config.glue_job_run_sql_sp}`,
+
+	//create glue workflow
+	 const glue_workflow = new glue.CfnWorkflow(this, "glue-workflow", {
+		name: workflow_config.glue_workflow_name,
+		description:
+		  "ETL glue workflow for scheduling the glue job daily",
+	  });
+
+	// create glue job that will run the SP in Redshift and load the file in an S3 bucket
+	const glue_job_run_sql_stored_procedure = new glue.CfnJob(this, workflow_config.glue_job_run_sql_sp, {
+		name: workflow_config.glue_job_run_sql_sp,
 		description: 'glue job to run SQL stored procedure',
 		command: {
 		  name: 'pythonshell',
@@ -65,8 +76,8 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		defaultArguments: {
 		  '--TempDir': `s3://aws-glue-temporary-${env_config.account_id}-${env_config.account_region}/`,
 		  '--additional-python-modules': 'aws-psycopg2',
-		  '--dbname': `${env_config.redshift_db_name}`,
-		  '--host': `${env_config.redshift_cluster_host_name}`,
+		  '--dbname': env_config.redshift_db_name,
+		  '--host': env_config.redshift_cluster_host_name,
 		  '--password': env_config.redshift_db_pwd, 
 		  '--port': env_config.redshift_db_port, 
 		  '--user': env_config.redshift_db_user,
@@ -78,15 +89,38 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		  '--enable-glue-datacatalog': 'false'
 		},
 		connections: {
-		  connections: [`${env_config.vpc_connection}`],
+		  connections: [env_config.vpc_connection],
 		},
 		glueVersion: "3.0",
 		maxRetries: 0,
 		maxCapacity: 1,
 		timeout: 300
 	  });
+
+	// create the trigger for the glue job. 
+	// This trigger is added to the workflow. This triggers the job - glue_job_run_sql_stored_procedure - 
+	  const glue_trigger_Job_run_sp = new glue.CfnTrigger(
+		this,
+		"glue-trigger-assetJob",
+		{
+		  name: "Run-Job-" + glue_job_run_sql_stored_procedure.name,
+		  workflowName: glue_workflow.name,
+		  actions: [
+			{
+			  jobName: glue_job_run_sql_stored_procedure.name,
+			  timeout: 120,
+			},
+		  ],
+		  type: "ON_DEMAND",
+		}
+	  );
+	  //add trigger dependency on workflow and job
+	  glue_trigger_Job_run_sp.node.addDependency(glue_job_run_sql_stored_procedure);
+	  glue_trigger_Job_run_sp.node.addDependency(glue_workflow);
   
-	const lambda_rename_move_files = new lambda.Function(this, `${workflow_config.lambda_name_rename_move_files}`, {
+
+
+	const lambda_rename_move_files = new lambda.Function(this, workflow_config.lambda_name_rename_move_files, {
 		runtime: lambda.Runtime.PYTHON_3_7, //execution enviroment
 		code: lambda.Code.fromAsset("lib/assets"),  //directory used from where code is loaded
 		handler: 'lambda_rename_move_files.lambda_handler', //name of file.function is lambda_handler in the code for lambda
