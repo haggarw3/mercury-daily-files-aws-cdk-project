@@ -10,6 +10,8 @@ import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { Construct } from 'constructs';
 
 
+const scriptsPath = "scripts/";
+
 export class MercuryAwsCdkStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -41,6 +43,18 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		glue_workflow_desc: 'Generate Daily Files for Mercury Team - Workflow Automation AWS CDK'
 	  }
 
+
+	//python scripts run in Glue job
+    const py_glue_job = new Asset(this, "py-asset-etl", {
+		path: path.join(__dirname, "assets/glue-job-run-sql-sp.py"),
+	  });
+
+	//python scripts run in lambda function
+    const py_lambda_rename_move_files = new Asset(this, "py-asset-etl", {
+		path: path.join(__dirname, "assets/cdk-lambda-rename-move-files.py"),
+	  });
+
+
 	const temp_bucket = new s3.Bucket(this, workflow_config.temp_bucket_name,
 	  {
 		bucketName: workflow_config.temp_bucket_name,
@@ -51,16 +65,9 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 
 	  const destination_bucket = new s3.Bucket(this, workflow_config.destination_bucket_name,
     {
-      bucketName: workflow_config.destination_bucket_name
+      bucketName: workflow_config.destination_bucket_name,
+		removalPolicy: cdk.RemovalPolicy.DESTROY
     });
-
-
-	//create glue workflow
-	 const glue_workflow = new glue.CfnWorkflow(this, "glue-workflow", {
-		name: workflow_config.glue_workflow_name,
-		description:
-		  "ETL glue workflow for scheduling the glue job daily",
-	  });
 
 	// create glue job that will run the SP in Redshift and load the file in an S3 bucket
 	const glue_job_run_sql_stored_procedure = new glue.CfnJob(this, workflow_config.glue_job_run_sql_sp, {
@@ -69,7 +76,8 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		command: {
 		  name: 'pythonshell',
 		  pythonVersion: '3',
-		  scriptLocation: 's3://cdk-mercury-daily-files-temp/scripts/cdk_lambda_rename_move_files.py'
+		//   scriptLocation: 's3://cdk-mercury-daily-files-temp/scripts/cdk_lambda_rename_move_files.py'
+		scriptLocation: py_glue_job.s3ObjectUrl
 		},
 		
 		role: `${env_config.env_role}`,
@@ -104,26 +112,25 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		"glue-trigger-assetJob",
 		{
 		  name: "Run-Job-" + glue_job_run_sql_stored_procedure.name,
-		  workflowName: glue_workflow.name,
+		  type: "SCHEDULED", 
+		  schedule: "cron(05 00 * * ? *)",
 		  actions: [
 			{
 			  jobName: glue_job_run_sql_stored_procedure.name,
 			  timeout: 120,
 			},
 		  ],
-		  type: "ON_DEMAND",
+
 		}
 	  );
 	  //add trigger dependency on workflow and job
 	  glue_trigger_Job_run_sp.node.addDependency(glue_job_run_sql_stored_procedure);
-	  glue_trigger_Job_run_sp.node.addDependency(glue_workflow);
-  
 
 
 	const lambda_rename_move_files = new lambda.Function(this, workflow_config.lambda_name_rename_move_files, {
 		runtime: lambda.Runtime.PYTHON_3_7, //execution enviroment
 		code: lambda.Code.fromAsset("lib/assets"),  //directory used from where code is loaded
-		handler: 'lambda_rename_move_files.lambda_handler', //name of file.function is lambda_handler in the code for lambda
+		handler: 'cdk-lambda-rename-move-files.lambda_handler', //name of file.function is lambda_handler in the code for lambda
 		timeout: cdk.Duration.minutes(10),
 		  });
   
@@ -149,11 +156,7 @@ export class MercuryAwsCdkStack extends cdk.Stack {
 		s3.EventType.OBJECT_CREATED_PUT
 	  ]
 	});
-
 	lambda_rename_move_files.addEventSource(s3PutEventSource);
-
-
-
 
 
   }
